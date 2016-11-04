@@ -207,6 +207,8 @@ object SimpleDUBDataFrame {
 
 
     val totalCount = points.count
+    // Save the contents of points in Parquet format at the specified path
+    points.write.mode("overwrite").parquet(warehousePath+"points.parquet")
 //    println("dfRecPair count:"+dfRecPair.count())
 //    dfRecPair.show()
 //    dfRecPair.write.csv(warehousePath+"dfRecPair.csv")
@@ -238,13 +240,13 @@ object SimpleDUBDataFrame {
 
     val k = 20
     val r = 0.15
-    val T1 = 6000
+    val T1 = 7000
 
     val boundarySet = search(Array(0,0,0,0),Array(k,k,k,k), k, r, T1,points)
     dfRecPair.unpersist(false) // Unpersist dfRecPair which is no longer used
 
     val similarPoints = exclude(points,boundarySet,k).persist(StorageLevel.MEMORY_AND_DISK) // remove the points inside the boundary
-    val T2 = 5000
+    val T2 = 6000
 
 
     //***** Output boundarySet to external file**********
@@ -297,8 +299,8 @@ object SimpleDUBDataFrame {
 
     val mappingCount = perfectMapping.count
 
-    result.write.option("header","true").csv(warehousePath+"resultPair")
     val resultCount = result.count
+    result.write.option("header","true").csv(warehousePath+"resultPair")
 
 //    similarPoints.unpersist(false) //Unpersist similarPoints DataSet which is no longer used
     val trueMatchedCount = perfectMapping.intersect(result).count
