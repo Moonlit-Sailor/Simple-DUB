@@ -1,20 +1,19 @@
+package org.simpledub.sparkdub
+
 /**
   * Created by root on 10/17/16.
   */
 /**
   * Created by root on 9/27/16.
   */
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.storage.StorageLevel
 //import org.apache.spark.sql.SparkSession.implicits_
 
+import java.io.PrintWriter
+
 import scala.collection.mutable
 import scala.math._
-import java.io.PrintWriter
-import java.io.File
 
 //import org.apache.spark.sql.SQLContext
 
@@ -239,17 +238,22 @@ object SimpleDUBDataFrame {
 
     val k = 20
     val r = 0.15
-    val T1 = 5000
+    val T1 = 6000
 
     val boundarySet = search(Array(0,0,0,0),Array(k,k,k,k), k, r, T1,points)
     dfRecPair.unpersist(false) // Unpersist dfRecPair which is no longer used
 
     val similarPoints = exclude(points,boundarySet,k).persist(StorageLevel.MEMORY_AND_DISK) // remove the points inside the boundary
-    val T2 = 1000
+    val T2 = 5000
 
 
     //***** Output boundarySet to external file**********
-    out.println("boundarySet size:"+boundarySet.length)
+    out.println("**************result list******************")
+    out.println("k:"+k)
+    out.println("r:"+r)
+    out.println("T1:"+T1)
+    out.println("T2:"+T2)
+    out.println("Phase1 boundarySet size:"+boundarySet.length)
     out.println("boundarySet:")
     out.println("(")
     for(arr<-boundarySet){
@@ -285,7 +289,7 @@ object SimpleDUBDataFrame {
       }//end for
     }// end while
 
-    points.unpersist(false) //Unpersist points DataSet which is no longer used
+//    points.unpersist(false) //Unpersist points DataSet which is no longer used
     val matchedPair = similarPoints.filter(x=>phase2Boundary forall (p=>sqdist(p map (_.toDouble/k), x._3)>r*r) )
 
     val result = matchedPair.drop("_3").persist(StorageLevel.MEMORY_AND_DISK)
@@ -296,8 +300,7 @@ object SimpleDUBDataFrame {
     result.write.option("header","true").csv(warehousePath+"resultPair")
     val resultCount = result.count
 
-    similarPoints.unpersist(false) //Unpersist similarPoints DataSet which is no longer used
-    import ss.implicits._
+//    similarPoints.unpersist(false) //Unpersist similarPoints DataSet which is no longer used
     val trueMatchedCount = perfectMapping.intersect(result).count
     val recall = trueMatchedCount.toDouble/mappingCount
     val reductionRatio = 1- (resultCount-trueMatchedCount).toDouble/(totalCount-mappingCount)
