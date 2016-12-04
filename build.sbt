@@ -9,4 +9,3 @@ libraryDependencies ++= Seq(
 
   "org.apache.spark" % "spark-sql_2.11" % "2.0.1"
 )
-    
