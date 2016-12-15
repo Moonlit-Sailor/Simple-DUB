@@ -5,6 +5,7 @@ import java.io.PrintWriter
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
+import scala.collection.mutable
 import scala.math._
 
 /**
@@ -150,18 +151,50 @@ object DistributedDUB {
     p // return p as the MaxPoint
   }
 
-  /**filter all the elements which are within the Boundary Set
-    *
-    * @param points
-    * @param boundarySet
-    * @param k
-    * @return the remaining points
+  /**filter out the elements which are within the Boundary Set
+    *The remaining points are those who are not dominated by any points in the boundary set.
+    * @param pointsArray: the original points set before filter
+    * @param boundarySet: the boundary set
+    * @param k: granularity parameter
+    * @return : the remaining points
     */
-  def exclude(points:Dataset[(String,String,Array[Double])], boundarySet:Vector[Array[Int]], k:Int)
-  :Dataset[(String,String,Array[Double])]={
-    def notLessThan(a:Array[Double], b:Array[Double])= (a zip b).exists{case(x,y)=> x>y}
+  def exclude(pointsArray: Array[ Array[Double] ], boundarySet:Vector[Array[Int]], k:Int)
+  : Array[ Array[Double] ] = {
+    def notDominateBy(a:Array[Double], b:Array[Double])= (a zip b).exists{case(x,y)=> x>y}
 
-    points.filter(p=>boundarySet.forall(b=>notLessThan(p._3,b map(_.toDouble/k))))
+    pointsArray.filter(p=>boundarySet.forall(b => notDominateBy(p,b map(_.toDouble/k))))
+  }
+
+
+  def containsElem(c:mutable.Iterable[Array[Int]], elem:Array[Int]):Boolean={
+    for(e<-c){
+      if(e sameElements elem) return true
+    }
+    false
+  }
+
+  def phase2Search(pointsAfterPhase1: Array[Array[Double]], phase1Boundary: Vector[Array[Int]],
+                   T1: Int, T2: Int, k: Int, r:Double) = {
+    val q = new mutable.Queue[Array[Int]]()
+    q ++= phase1Boundary
+    val phase2BoundPoints = new mutable.Queue[Array[Int]]()
+    while(q.nonEmpty){
+      val current = q.dequeue()
+      for(i<- current.indices; j<- -1 to 1 by 2){
+        val neighbour = current.clone()
+        neighbour(i) += j
+        if(neighbour(i)>=0 && neighbour(i)<=k && !containsElem(phase2BoundPoints,neighbour)
+          && !containsElem(q,neighbour)){
+          val den = density(neighbour map (_.toDouble/k),pointsAfterPhase1,r)
+          if(den>=T2 && den<T1){
+            q += neighbour
+            phase2BoundPoints += neighbour
+          }
+        } //end outer if
+
+      }//end for
+    }// end while
+    phase2BoundPoints
   }
 
   def main(args: Array[String]): Unit = {
@@ -188,25 +221,36 @@ object DistributedDUB {
 
     println("total:"+totalCount)
 
-    val boundarySet = points.mapPartitionsWithIndex( (partitionId, iter) => {
+    val localPoints = points.mapPartitionsWithIndex( (partitionId, iter) => {
       val pointsArray = iter.toArray
 
       val localBoundarySet = phase1Search(k, r, T1, pointsArray, dim)
+      val pointsAfterPhase1 = exclude(pointsArray,localBoundarySet,k)
+      val phase2BoundPoints = phase2Search(pointsAfterPhase1,localBoundarySet,T1,T2,k,r)
 
-      Seq((partitionId,localBoundarySet)).iterator
+      val result = pointsAfterPhase1.filter(p => phase2BoundPoints forall(b => sqdist(b.map(_.toDouble/k),p)>r*r))
+      Seq((partitionId,result)).iterator
     })
 
-    val globalBoundarySet = boundarySet.collect()
 
-
-    // print the result boundary set by per partition
-    globalBoundarySet.foreach{ case(id,vec) => {
-      println("(partitionId:"+id)
-      vec.foreach(arr => println(arr.mkString("[",",","], ")))
-      println(")") }
-    }
+//    //**************collect the local boundary set***************
+//    val boundarySet = points.mapPartitionsWithIndex( (partitionId, iter) => {
+//      val pointsArray = iter.toArray
+//
+//      val localBoundarySet = phase1Search(k, r, T1, pointsArray, dim)
+//
+//      Seq((partitionId,localBoundarySet)).iterator
+//    })
+//    val globalBoundarySet = boundarySet.collect()
+//
+//    // print the result boundary set by per partition
+//    globalBoundarySet.foreach{ case(id,vec) => {
+//      println("(partitionId:"+id)
+//      vec.foreach(arr => println(arr.mkString("[",",","], ")))
+//      println(")") }
+//    }
+//    //***************collect the local boundary set**************
 
     ss.stop()
-
   }
 }
