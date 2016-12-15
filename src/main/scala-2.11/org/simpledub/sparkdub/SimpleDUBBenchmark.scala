@@ -3,14 +3,15 @@ import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.storage.StorageLevel
 import java.io.PrintWriter
 
+import org.apache.spark.rdd.RDD
+
 import scala.collection.mutable
 import scala.math._
 /**
   * Created by root on 12/15/16.
   */
 
-
-object SimpleDUB {
+object SimpleDUBBenchmark {
   def minimum(a: Int*) = a.min
 
   def editDistanceSimilarityPercent(stra:String, strb:String): Double = {
@@ -44,11 +45,11 @@ object SimpleDUB {
   a.zip(b).map{case(x1,x2)=>(x1-x2)*(x1-x2)}.sum
 
   // compute the density of the given point p
-//  var densityCount = 0
-  def density(p:Array[Double], points:Dataset[ (String,String,Array[Double]) ], r:Double)={
+// var densityCount = 0
+  def density(p: Array[Double], points: RDD[ Array[Double] ], r: Double)={
 //    densityCount += 1
-    points.filter(x=>sqdist(p,x._3) < r*r).count
-
+//    points.map(x=> if (sqdist(p,x) < r*r) 1 else 0).reduce(_+_)
+    points.filter(x => sqdist(p,x) < r*r).count
   }
 
 
@@ -73,10 +74,10 @@ object SimpleDUB {
     * @return Boundary Points set M
     */
   def search(minPoint:Array[Int], maxPoint:Array[Int], k:Int, r:Double,
-             T1:Int, points:Dataset[(String,String,Array[Double])]) : Vector[Array[Int]]={
+             T1:Int, points:RDD[ Array[Double] ]) : Vector[Array[Int]]={
 
 //    searchCount += 1
-    def searchHelper(n:Int, boundPoint:Array[Int]):Vector[Array[Int]]={
+    def searchHelper(n:Int, boundPoint:Array[Int]): Vector[Array[Int]]={
       val min = minPoint.clone() //min point of the current space
       val max = boundPoint map (_ -1) //max point of the current space
       for(e<- onePositionSet(n,0)){
@@ -101,6 +102,16 @@ object SimpleDUB {
     }
   }
 
+  def phase1Search(k:Int, r:Double, T1:Int, points:RDD[Array[Double]], dim: Int)={
+    val minPoint = new Array[Int](dim)
+    val maxPoint = new Array[Int](dim)
+    for(i <- 0 until dim){
+      minPoint(i) = 0
+      maxPoint(i) = k
+    }
+    search(minPoint, maxPoint, k, r, T1,points)
+  }
+
   /**Find MaxPoint of the current region. The region is represented as the minimum point and the maximum point
     * All virtual points between minPoint and maxPoint belong to the current region
     * @param minPoint: the minimum point of the current region and density(minPoint) >= T1
@@ -111,8 +122,8 @@ object SimpleDUB {
     * @param points: the RDD that contains all of the record pair points
     * @return maxPoint of the current region
     */
-  def findMaxBound(minPoint:Array[Int], maxPoint:Array[Int], k:Int, r:Double,
-                   T1:Int, points:Dataset[(String,String,Array[Double])]) : Array[Int] ={
+  def findMaxBound(minPoint: Array[Int], maxPoint: Array[Int], k:Int, r:Double,
+                   T1: Int, points: RDD[ Array[Double] ]) : Array[Int] ={
 
     if(density(minPoint map (_.toDouble/k), points, r)<T1) throw new Exception("There's no MaxBoundPoint in current space whose density >T1")
 
@@ -146,128 +157,73 @@ object SimpleDUB {
     * @param k: granularity parameter
     * @return : the remaining points
     */
-  def exclude(points:Dataset[(String,String,Array[Double])], boundarySet:Vector[Array[Int]], k:Int)
-  :Dataset[(String,String,Array[Double])]={
-    def notLessThan(a:Array[Double], b:Array[Double])= (a zip b).exists{case(x,y)=> x>y}
+  def exclude(points: RDD[Array[Double]], boundarySet: Vector[Array[Int]], k: Int)
+  : RDD[Array[Double]]={
+    def notDominateBy(a:Array[Double], b:Array[Double])= (a zip b).exists{case(x,y)=> x>y}
 
-    points.filter(p=>boundarySet.forall(b=>notLessThan(p._3,b map(_.toDouble/k))))
+    points.filter(p => boundarySet.forall(b => notDominateBy(p,b map(_.toDouble/k))))
   }
 
-  def main(args: Array[String]): Unit = {
-    val warehousePath = "file:///root/software/RecordMatching/data/"
-    val k = 50
-    val r = 0.15
-    val T1 = 6000
-    val T2 = 5000
-    val dim = 4 // 4 features
-
-    val ss = SparkSession.builder().appName("ParquetDUB").getOrCreate()
-
-    // points's element is type of DataSet[(String, String, Array[Double](4))]
-    import ss.implicits._
-    val points = ss.read.parquet(warehousePath+"points2.parquet").map(row=> (row.getString(0),
-      row.getString(1), row.getSeq[Double](2).toArray) ).persist(StorageLevel.MEMORY_AND_DISK)
-
-    val totalCount = points.count
-
-
-
-    val boundarySet = search(Array(0,0,0,0),Array(k,k,k,k), k, r, T1,points)
-
-
-    val similarPoints = exclude(points,boundarySet,k).persist(StorageLevel.MEMORY_AND_DISK) // remove the points inside the boundary
-
-    //***** Output boundarySet to external file**********
-    out.println("**************result list******************")
-    out.println("k:"+k)
-    out.println("r:"+r)
-    out.println("T1:"+T1)
-    out.println("T2:"+T2)
-    out.println("Phase1 boundarySet size:"+boundarySet.length)
-    out.println("boundarySet:")
-    out.println("(")
-    for(arr<-boundarySet){
-      out.println(arr.mkString("[", ",", "]"))
-    }
-    out.println(")")
-
-    // initialize the neighbour points set which density > T2
-    val q = new mutable.Queue[Array[Int]]()
-    q ++= boundarySet
-
-    val phase2Boundary = new mutable.Queue[Array[Int]]()
-    //      phase2Boundary ++= boundarySet
-
-    out.println("before:")
-    out.println("phase2Boundary size:"+phase2Boundary.length)
-    out.println("q size:"+q.size)
-
-    while(q.nonEmpty){
-      val current = q.dequeue()
-      for(i<- current.indices; j<- -1 to 1 by 2){
-        val neighbour = current.clone()
-        neighbour(i) += j
-        if(neighbour(i)>=0 && neighbour(i)<=k && !containsElem(phase2Boundary,neighbour)
-          && !containsElem(q,neighbour)){
-          val den = density(neighbour map (_.toDouble/k),similarPoints,r)
-          if(den>=T2 && den<T1){
-            q += neighbour
-            phase2Boundary += neighbour
-          }
-        } //end outer if
-
-      }//end for
-    }// end while
-
-    //    points.unpersist(false) //Unpersist points DataSet which is no longer used
-    val matchedPair = similarPoints.filter(x=>phase2Boundary forall (p=>sqdist(p map (_.toDouble/k), x._3)>r*r) )
-
-    val result = matchedPair.drop("_3").persist(StorageLevel.MEMORY_AND_DISK)
-    val perfectMapping = ss.read.option("header","true").csv(fileResultMapping)
-
-    val mappingCount = perfectMapping.count
-
-    val resultCount = result.count
-    result.write.option("header","true").mode("overwrite").csv(warehousePath+"resultPairTest")
-
-    val trueMatchedCount = perfectMapping.intersect(result).count
-    val recall = trueMatchedCount.toDouble/mappingCount
-
-    val B = totalCount - resultCount
-    val B_match = mappingCount - trueMatchedCount
-    val B_non = B-B_match
-    val reductionRatio = B_non.toDouble/(totalCount-mappingCount)
-    //      val reductionRatio = 1- (resultCount-trueMatchedCount).toDouble/(totalCount-mappingCount)
-
-    out.println("searchCount:"+searchCount)
-    out.println("densityCount:"+densityCount)
-
-    out.println("After phase2:")
-    out.println("phase2 Boundary size:"+phase2Boundary.length)
-    out.println("phase2Boundary:")
-    out.println("(")
-    for(arr<-phase2Boundary){
-      out.println(arr.mkString("[", ",", "]"))
-    }
-    out.println(")")
-    out.println("q:"+q)
-
-    out.println("Total record count:"+totalCount)
-    out.println("resultPair:"+resultCount)
-    out.println("true Matched:"+trueMatchedCount)
-    out.println("mappingCount:"+mappingCount)
-    out.println("Recall:"+ recall)
-    out.println("Reduction ratio:"+ reductionRatio)
-    out.close()
-
-    ss.stop()
-  } //end main
-
-  def containsElem(c:mutable.Iterable[Array[Int]], elem:Array[Int]):Boolean={
+  def containsElem(c:mutable.Queue[Array[Int]], elem:Array[Int]):Boolean={
     for(e<-c){
       if(e sameElements elem) return true
     }
     false
   }
 
+  def phase2Search(pointsAfterPhase1: RDD[Array[Double]], phase1Boundary: Vector[Array[Int]],
+                   T1: Int, T2: Int, k: Int, r:Double) = {
+    val q = new mutable.Queue[Array[Int]]()
+    q ++= phase1Boundary
+    val phase2BoundPoints = new mutable.Queue[Array[Int]]()
+    while(q.nonEmpty){
+      val current = q.dequeue()
+      for(i<- current.indices; j<- -1 to 1 by 2){
+        val neighbour = current.clone()
+        neighbour(i) += j
+        if(neighbour(i)>=0 && neighbour(i)<=k && !containsElem(phase2BoundPoints,neighbour)
+          && !containsElem(q,neighbour)){
+          val den = density(neighbour map (_.toDouble/k),pointsAfterPhase1,r)
+          if(den>=T2 && den<T1){
+            q += neighbour
+            phase2BoundPoints += neighbour
+          }
+        } //end outer if
+
+      }//end for
+    }// end while
+    phase2BoundPoints
+  }
+
+  def main(args: Array[String]): Unit = {
+    val warehousePath = "file:///root/software/RecordMatching/data/"
+
+    val dim = 4 // 4 features
+    val k = 50
+    val r = 0.5
+    val T1 = 50
+    val T2 = 5000
+    val numPartitions = 40
+
+    val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("SimpleDUB_Bench").getOrCreate()
+
+    // points's element is type of RDD[ Array[Double](dim) ]
+    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/sample_set").repartition(numPartitions)
+      .map(line => line.split(",").take(dim)).map(pArray => pArray.map(_.toDouble))
+    points.persist(StorageLevel.MEMORY_AND_DISK)
+    val totalCount = points.count
+
+    val phase1BoundarySet = phase1Search(k,r,T1,points,dim)
+    println("totalCount:"+totalCount)
+    phase1BoundarySet.foreach(p => println(p.mkString("[", ",", "]")))
+
+//    // remove the points inside the boundary
+//    val pointsAfterPhase1 = exclude(points,phase1BoundarySet,k).persist(StorageLevel.MEMORY_AND_DISK)
+//
+//    val phase2BoundPoints = phase2Search(pointsAfterPhase1,phase1BoundarySet,T1,T2,k,r)
+//    val matchedPair = pointsAfterPhase1.filter(x=>phase2BoundPoints forall (p=>sqdist(p map (_.toDouble/k), x)>r*r) )
+
+    ss.stop()
+
+  } //end main
 }

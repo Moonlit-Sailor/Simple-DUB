@@ -182,9 +182,9 @@ object SimpleDUBDataFrame {
     //    val conf = new SparkConf().setAppName("DUB Record Matching")
     //    val sc = new SparkContext(conf)
 
-    val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("DUB").getOrCreate()
-    val dfAmazon = ss.read.option("header","true").csv(filePathAmazon).repartition(12)
-    val dfGoogle = ss.read.option("header","true").csv(filePathGoogle).repartition(12)
+    val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("TwoNodeDUB").getOrCreate()
+    val dfAmazon = ss.read.option("header","true").csv(filePathAmazon).repartition(36)
+    val dfGoogle = ss.read.option("header","true").csv(filePathGoogle).repartition(36)
     //    val rawDataAmazon = sc.textFile(filePathAmazon)
     //    val rawDataGoogle = sc.textFile(filePathGoogle)
     val dim = 4 // 4 features
@@ -208,7 +208,7 @@ object SimpleDUBDataFrame {
 
     val totalCount = points.count
     // Save the contents of points in Parquet format at the specified path
-    points.write.mode("overwrite").parquet(warehousePath+"points.parquet")
+    points.write.mode("overwrite").parquet(warehousePath+"points2.parquet")
 //    println("dfRecPair count:"+dfRecPair.count())
 //    dfRecPair.show()
 //    dfRecPair.write.csv(warehousePath+"dfRecPair.csv")
@@ -240,13 +240,13 @@ object SimpleDUBDataFrame {
 
     val k = 20
     val r = 0.15
-    val T1 = 7000
+    val T1 = 6000
 
     val boundarySet = search(Array(0,0,0,0),Array(k,k,k,k), k, r, T1,points)
     dfRecPair.unpersist(false) // Unpersist dfRecPair which is no longer used
 
     val similarPoints = exclude(points,boundarySet,k).persist(StorageLevel.MEMORY_AND_DISK) // remove the points inside the boundary
-    val T2 = 6000
+    val T2 = 5000
 
 
     //***** Output boundarySet to external file**********
@@ -268,7 +268,7 @@ object SimpleDUBDataFrame {
     q ++= boundarySet
 
     val phase2Boundary = new mutable.Queue[Array[Int]]()
-    phase2Boundary ++= boundarySet
+//    phase2Boundary ++= boundarySet
 
     out.println("before:")
     out.println("phase2Boundary size:"+phase2Boundary.length)
@@ -280,7 +280,8 @@ object SimpleDUBDataFrame {
       for(i<- current.indices; j<- -1 to 1 by 2){
         val neighbour = current.clone()
         neighbour(i) += j
-        if(neighbour(i)>=0 && neighbour(i)<=k && !containsElem(phase2Boundary,neighbour)){
+        if(neighbour(i)>=0 && neighbour(i)<=k && !containsElem(q,neighbour) &&
+          !containsElem(phase2Boundary,neighbour)){
           val den = density(neighbour map (_.toDouble/k),similarPoints,r)
           if(den>=T2 && den<T1){
             q += neighbour
@@ -295,17 +296,21 @@ object SimpleDUBDataFrame {
     val matchedPair = similarPoints.filter(x=>phase2Boundary forall (p=>sqdist(p map (_.toDouble/k), x._3)>r*r) )
 
     val result = matchedPair.drop("_3").persist(StorageLevel.MEMORY_AND_DISK)
+//    val result = similarPoints.drop("_3").persist(StorageLevel.MEMORY_AND_DISK)
     val perfectMapping = ss.read.option("header","true").csv(fileResultMapping)
 
     val mappingCount = perfectMapping.count
 
+    result.write.option("header","true").mode("overwrite").csv(warehousePath+"resultPair")
     val resultCount = result.count
-    result.write.option("header","true").csv(warehousePath+"resultPair")
 
 //    similarPoints.unpersist(false) //Unpersist similarPoints DataSet which is no longer used
     val trueMatchedCount = perfectMapping.intersect(result).count
     val recall = trueMatchedCount.toDouble/mappingCount
-    val reductionRatio = 1- (resultCount-trueMatchedCount).toDouble/(totalCount-mappingCount)
+    val B = totalCount - resultCount
+    val B_match = mappingCount - trueMatchedCount
+    val B_non = B-B_match
+    val reductionRatio = B_non.toDouble/(totalCount-mappingCount)
 
     out.println("searchCount:"+searchCount)
     out.println("densityCount:"+densityCount)
