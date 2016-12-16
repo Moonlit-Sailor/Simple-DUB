@@ -169,10 +169,10 @@ object DistributedDUB {
 
     val dim = 4 // 4 features
     val k = 50
-    val r = 0.5
-    val T1 = 50
+    val r = 0.25
+    val T1 = 500
     val T2 = 5000
-    val numPartitions = 16
+    val numPartitions = 2
 
     val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("DistributedDUB").getOrCreate()
 
@@ -181,8 +181,9 @@ object DistributedDUB {
 //    val points = ss.read.parquet(warehousePath+"points2.parquet").map(row=> (row.getString(0),
 //      row.getString(1), row.getSeq[Double](2).toArray) ).persist(StorageLevel.MEMORY_AND_DISK)
 
-    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/sample_set").repartition(numPartitions)
+    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_vs_acm").repartition(numPartitions)
       .map(line=>line.split(",").take(dim)).map(pArray=>pArray.map(_.toDouble))
+    points.persist(StorageLevel.MEMORY_AND_DISK)
 
     val totalCount = points.count
 
