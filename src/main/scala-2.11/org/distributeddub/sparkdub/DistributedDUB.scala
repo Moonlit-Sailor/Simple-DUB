@@ -11,7 +11,7 @@ import scala.math._
   * Created by root on 11/3/16.
   */
 
-object DistributedDUB {
+object DistributedDUB extends Serializable{
   def minimum(a: Int*) = a.min
 
   def editDistanceSimilarityPercent(stra:String, strb:String): Double = {
@@ -189,10 +189,13 @@ object DistributedDUB {
 
     println("total:"+totalCount)
 
+    val dubObj = DistributedDUB
+    val broadcastDUB = ss.sparkContext.broadcast(dubObj)
+
     val boundarySet = points.mapPartitionsWithIndex( (partitionId, iter) => {
       val pointsArray = iter.toArray
 
-      val localBoundarySet = phase1Search(k, r, T1, pointsArray, dim)
+      val localBoundarySet = broadcastDUB.value.phase1Search(k, r, T1, pointsArray, dim)
 
       Seq((partitionId,localBoundarySet)).iterator
     })
