@@ -193,7 +193,7 @@ object test{
 
     val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_vs_acm").map(line => (randomGen.nextInt(numPartitions), line))
       .repartition(numPartitions)
-    val points = data..map{case (num,line) => line}
+    val points = data.map{case (num,line) => line}
       .map(line=>line.split(",").take(dim)).map(pArray=>pArray.map(_.toDouble))
     points.persist(StorageLevel.MEMORY_AND_DISK)
 
