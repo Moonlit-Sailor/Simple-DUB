@@ -6,6 +6,7 @@ import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
 import scala.math._
+import scala.util.Random
 
 /**
   * Created by root on 11/3/16.
@@ -188,7 +189,11 @@ object test{
 //    val points = ss.read.parquet(warehousePath+"points2.parquet").map(row=> (row.getString(0),
 //      row.getString(1), row.getSeq[Double](2).toArray) ).persist(StorageLevel.MEMORY_AND_DISK)
 
-    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_vs_acm").repartition(numPartitions)
+    val randomGen = new Random()
+
+    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_vs_acm").map(line => (randomGen.nextInt(numPartitions), line))
+      .repartition(numPartitions)
+    val points = data..map{case (num,line) => line}
       .map(line=>line.split(",").take(dim)).map(pArray=>pArray.map(_.toDouble))
     points.persist(StorageLevel.MEMORY_AND_DISK)
 
