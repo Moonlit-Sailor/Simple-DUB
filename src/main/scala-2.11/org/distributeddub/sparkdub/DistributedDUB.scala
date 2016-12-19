@@ -2,6 +2,7 @@ package org.distributeddub.sparkdub
 
 import java.io.PrintWriter
 
+import org.apache.spark.{HashPartitioner, Partitioner}
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
@@ -171,6 +172,22 @@ class DistributedDUB extends Serializable {
   }
 }
 
+//class RandomPartitioner(partitions: Int) extends Partitioner{
+//  override def numPartitions: Int = partitions
+//
+//  override def getPartition(key: Any): Int = {
+//    val k = key.asInstanceOf[Int]
+//    k % partitions
+//  }
+//
+//  override def hashCode(): Int = numPartitions
+//
+//  override def equals(obj: scala.Any): Boolean = obj match {
+//    case other:RandomPartitioner => this.numPartitions == other.numPartitions
+//    case _ => false
+//  }
+//}
+
 object test{
   def main(args: Array[String]): Unit = {
     val warehousePath = "file:///root/software/RecordMatching/data/"
@@ -189,15 +206,16 @@ object test{
 //    val points = ss.read.parquet(warehousePath+"points2.parquet").map(row=> (row.getString(0),
 //      row.getString(1), row.getSeq[Double](2).toArray) ).persist(StorageLevel.MEMORY_AND_DISK)
 
-    val randomGen = new Random()
+    val randomGen = new Random(47)
 
-    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_vs_acm").map(line => (randomGen.nextInt(numPartitions), line))
-      .repartition(numPartitions)
+    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm")
+      .map(line => (randomGen.nextInt(1000) % numPartitions, line)).partitionBy(new HashPartitioner(numPartitions))
+    val totalCount = data.count
     val points = data.map{case (num,line) => line}
       .map(line=>line.split(",").take(dim)).map(pArray=>pArray.map(_.toDouble))
     points.persist(StorageLevel.MEMORY_AND_DISK)
 
-    val totalCount = points.count
+
 
     println("total:"+totalCount)
 
