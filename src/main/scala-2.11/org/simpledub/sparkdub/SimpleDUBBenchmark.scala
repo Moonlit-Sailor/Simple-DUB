@@ -208,7 +208,7 @@ object SimpleDUBBenchmark {
     val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("SimpleDUB_Bench").getOrCreate()
 
     // points's element is type of RDD[ Array[Double](dim) ]
-    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm", numPartitions)
+    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm").repartition(numPartitions)
       .map(line => line.split(",").take(dim)).map(pArray => pArray.map(_.toDouble))
     points.persist(StorageLevel.MEMORY_AND_DISK)
     val totalCount = points.count
