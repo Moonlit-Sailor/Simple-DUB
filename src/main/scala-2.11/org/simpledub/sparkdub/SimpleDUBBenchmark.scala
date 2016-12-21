@@ -157,11 +157,11 @@ object SimpleDUBBenchmark {
     * @param k: granularity parameter
     * @return : the remaining points
     */
-  def exclude(points: RDD[Array[Double]], boundarySet: Vector[Array[Int]], k: Int)
-  : RDD[Array[Double]]={
+  def exclude(points: RDD[(Array[Double], Int)], boundarySet: Vector[Array[Int]], k: Int)
+  : RDD[(Array[Double], Int)]={
     def notDominateBy(a:Array[Double], b:Array[Double])= (a zip b).exists{case(x,y)=> x>y}
 
-    points.filter(p => boundarySet.forall(b => notDominateBy(p,b map(_.toDouble/k))))
+    points.filter{case(p,_) => boundarySet.forall(b => notDominateBy(p,b map(_.toDouble/k)))}
   }
 
   def containsElem(c:mutable.Queue[Array[Int]], elem:Array[Int]):Boolean={
@@ -208,22 +208,34 @@ object SimpleDUBBenchmark {
     val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("SimpleDUB_Bench").getOrCreate()
 
     // points's element is type of RDD[ Array[Double](dim) ]
-    val points = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm").repartition(numPartitions)
-      .map(line => line.split(",").take(dim)).map(pArray => pArray.map(_.toDouble))
-    points.persist(StorageLevel.MEMORY_AND_DISK)
+    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm").sample(false,0.1).repartition(numPartitions)
+      .map(line => (line.split(",").take(dim), line.split(",").last))
+      .map{case(pArray,label) => (pArray.map(_.toDouble),label.toInt)}
+    data.persist(StorageLevel.MEMORY_AND_DISK)
+
+    val points = data.map{case(array,_) => array}.persist(StorageLevel.MEMORY_AND_DISK)
     val totalCount = points.count
 
     val phase1BoundarySet = phase1Search(k,r,T1,points,dim)
 
     val positiveCounter = ss.sparkContext.accumulator(0)
-    points.foreach(array => if(array(4) == 1) positiveCounter += 1)
+    data.foreach{case(_,label) => if(label == 1) positiveCounter += 1}
     val totalPositive = positiveCounter.value
     // remove the points inside the boundary
-    val pointsAfterPhase1 = exclude(points,phase1BoundarySet,k).persist(StorageLevel.MEMORY_AND_DISK)
+    val pointsAfterPhase1 = exclude(data,phase1BoundarySet,k).persist(StorageLevel.MEMORY_AND_DISK)
+    val resultCount = pointsAfterPhase1.count
 
     val resultPositiveCounter = ss.sparkContext.accumulator(0)
-    pointsAfterPhase1.foreach(array => if(array(4) == 1) resultPositiveCounter += 1)
+    pointsAfterPhase1.foreach{case(_,label) => if(label == 1) resultPositiveCounter += 1}
     val resultPositive = resultPositiveCounter.value
+    val recall = resultPositive.toDouble / totalPositive
+
+    val totalNegtive = totalCount - totalPositive
+    val resultNegtive = resultCount - resultPositive
+    val reduc = (resultNegtive - 4500 - resultPositive).toDouble / (totalNegtive- 4500 - resultPositive)
+    println("recall:"+recall)
+    println("reduction:"+ (1-reduc))
+
 
 //    val phase2BoundPoints = phase2Search(pointsAfterPhase1,phase1BoundarySet,T1,T2,k,r)
 //    val matchedPair = pointsAfterPhase1.filter(x=>phase2BoundPoints forall (p=>sqdist(p map (_.toDouble/k), x)>r*r) )
