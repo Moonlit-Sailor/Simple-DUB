@@ -214,12 +214,17 @@ object SimpleDUBBenchmark {
     val totalCount = points.count
 
     val phase1BoundarySet = phase1Search(k,r,T1,points,dim)
-    println("totalCount:"+totalCount)
-    phase1BoundarySet.foreach(p => println(p.mkString("[", ",", "]")))
 
-//    // remove the points inside the boundary
-//    val pointsAfterPhase1 = exclude(points,phase1BoundarySet,k).persist(StorageLevel.MEMORY_AND_DISK)
-//
+    val positiveCounter = ss.sparkContext.accumulator(0)
+    points.foreach(array => if(array(4) == 1) positiveCounter += 1)
+    val totalPositive = positiveCounter.value
+    // remove the points inside the boundary
+    val pointsAfterPhase1 = exclude(points,phase1BoundarySet,k).persist(StorageLevel.MEMORY_AND_DISK)
+
+    val resultPositiveCounter = ss.sparkContext.accumulator(0)
+    pointsAfterPhase1.foreach(array => if(array(4) == 1) resultPositiveCounter += 1)
+    val resultPositive = resultPositiveCounter.value
+
 //    val phase2BoundPoints = phase2Search(pointsAfterPhase1,phase1BoundarySet,T1,T2,k,r)
 //    val matchedPair = pointsAfterPhase1.filter(x=>phase2BoundPoints forall (p=>sqdist(p map (_.toDouble/k), x)>r*r) )
 
