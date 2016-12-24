@@ -159,16 +159,16 @@ class DistributedDUB extends Serializable {
   /** filter out the elements which are within the Boundary Set
     * The remaining points are those who are not dominated by any points in the boundary set.
     *
-    * @param pointsArray : the original points set before filter
+    * @param pointsArrayWithLabel : the original points set before filter
     * @param boundarySet : the boundary set
     * @param k           : granularity parameter
     * @return : the remaining points
     */
-  def exclude(pointsArray: Array[Array[Double]], boundarySet: Vector[Array[Int]], k: Int)
-  : Array[Array[Double]] = {
+  def exclude(pointsArrayWithLabel: Array[(Array[Double], Int)], boundarySet: Vector[Array[Int]], k: Int)
+  : Array[(Array[Double], Int)] = {
     def notDominateBy(a: Array[Double], b: Array[Double]) = (a zip b).exists { case (x, y) => x > y }
 
-    pointsArray.filter(p => boundarySet.forall(b => notDominateBy(p, b map (_.toDouble / k))))
+    pointsArrayWithLabel.filter{case(p,_) => boundarySet.forall(b => notDominateBy(p, b map (_.toDouble / k)))}
   }
 }
 
@@ -195,9 +195,9 @@ object test{
     val dim = 4 // 4 features
     val k = 50
     val r = 0.25
-    val T1 = 250
+    val T1 = 1500
     val T2 = 5000
-    val numPartitions = 2
+    val numPartitions = 36
 
     val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("DistributedDUB").getOrCreate()
 
@@ -208,37 +208,84 @@ object test{
 
     val randomGen = new Random(47)
 
-    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm")
+    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/bigdata")
       .map(line => (randomGen.nextInt(1000) % numPartitions, line)).partitionBy(new HashPartitioner(numPartitions))
-    val totalCount = data.count
+
+    val pointsWithLabel = data
+      .map{ case (num, line) => (line.split(",").take(dim), line.split(",").last)}
+      .map{ case (pArray, label) => (pArray.map(_.toDouble),label.toInt)}
+      .persist(StorageLevel.MEMORY_AND_DISK)
     val points = data.map{case (num,line) => line}
       .map(line=>line.split(",").take(dim)).map(pArray=>pArray.map(_.toDouble))
-    points.persist(StorageLevel.MEMORY_AND_DISK)
 
+    val totalPositivePerPartition = pointsWithLabel.mapPartitionsWithIndex((parId,iter) => {
+      val positiveCounter = iter.count{case(_,label) => label == 1}
+      Seq((parId,positiveCounter)).iterator
+    }).collect()
 
+    val totalCountPerPartition = points.mapPartitionsWithIndex((parId, iter) =>
+      Seq((parId,iter.length)).iterator
+    ).collect()
 
-    println("total:"+totalCount)
 
     val dubObj = new DistributedDUB()
     val broadcastDUB = ss.sparkContext.broadcast(dubObj)
+    val resultPartitionSet = pointsWithLabel.mapPartitions(iter => {
+      val pointsArrayWithLabel = iter.toArray
 
-    val boundarySet = points.mapPartitionsWithIndex( (partitionId, iter) => {
-      val pointsArray = iter.toArray
-
+      val pointsArray = pointsArrayWithLabel.map{case(pArray,_) => pArray}
       val localBoundarySet = broadcastDUB.value.phase1Search(k, r, T1, pointsArray, dim)
+      val resultWithLabel = broadcastDUB.value.exclude(pointsArrayWithLabel,localBoundarySet,k)
+      resultWithLabel.iterator
+    }).persist(StorageLevel.MEMORY_AND_DISK)
 
-      Seq((partitionId,localBoundarySet)).iterator
-    })
+    pointsWithLabel.unpersist()
 
-    val globalBoundarySet = boundarySet.collect()
+    val resultCountPerPartition = resultPartitionSet.mapPartitionsWithIndex((parId, iter) =>
+      Seq((parId,iter.length)).iterator
+    ).collect()
 
+    val resultPositivePerPartition = resultPartitionSet.mapPartitionsWithIndex((parId,iter) => {
+      val positiveCounter = iter.count{case(_,label) => label == 1}
+      Seq((parId,positiveCounter)).iterator
+    }).collect()
 
-    // print the result boundary set by per partition
-    globalBoundarySet.foreach{ case(id,vec) => {
-      println("(partitionId:"+id)
-      vec.foreach(arr => println(arr.mkString("[",",","], ")))
-      println(")") }
+    resultPositivePerPartition.sortWith((x,y) => x._1 < y._1)
+    totalPositivePerPartition.sortWith((x,y) => x._1 < y._1)
+    resultCountPerPartition.sortWith((x,y) => x._1 < y._1)
+    totalCountPerPartition.sortWith((x,y) => x._1 < y._1)
+    val recall = resultPositivePerPartition.zip(totalPositivePerPartition).map{
+      case (result, total) => (result._1, result._2.toDouble/ total._2)}
+    val totalNegativePerPartition = totalCountPerPartition.zip(totalPositivePerPartition).map{
+      case (total, positive) => (total._1,total._2-positive._2)
     }
+    val resultNegativePerPartition = resultCountPerPartition.zip(resultPositivePerPartition).map{
+      case (count, positive) => (count._1,count._2-positive._2)
+    }
+    val reduction = resultNegativePerPartition.zip(totalNegativePerPartition).map{
+      case (result,total) => (result._1, 1- (result._2.toDouble / total._2))
+    }
+
+    println("recall:" + recall.mkString(","))
+    println("reduction:" + reduction.mkString(","))
+
+//    val boundarySet = points.mapPartitionsWithIndex( (partitionId, iter) => {
+//      val pointsArray = iter.toArray
+//
+//      val localBoundarySet = broadcastDUB.value.phase1Search(k, r, T1, pointsArray, dim)
+//
+//      Seq((partitionId,localBoundarySet)).iterator
+//    })
+//
+//    val globalBoundarySet = boundarySet.collect()
+//
+//
+//    // print the result boundary set by per partition
+//    globalBoundarySet.foreach{ case(id,vec) => {
+//      println("(partitionId:"+id)
+//      vec.foreach(arr => println(arr.mkString("[",",","], ")))
+//      println(")") }
+//    }
 
     ss.stop()
 

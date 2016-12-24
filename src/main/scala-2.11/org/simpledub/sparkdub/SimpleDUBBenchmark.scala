@@ -201,14 +201,14 @@ object SimpleDUBBenchmark {
     val dim = 4 // 4 features
     val k = 50
     val r = 0.25
-    val T1 = 500
+    val T1 = 50000
     val T2 = 5000
-    val numPartitions = 2
+    val numPartitions = 36
 
     val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("SimpleDUB_Bench").getOrCreate()
 
     // points's element is type of RDD[ Array[Double](dim) ]
-    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/dblp_acm").sample(false,0.1).repartition(numPartitions)
+    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/bigdata").repartition(numPartitions)
       .map(line => (line.split(",").take(dim), line.split(",").last))
       .map{case(pArray,label) => (pArray.map(_.toDouble),label.toInt)}
     data.persist(StorageLevel.MEMORY_AND_DISK)
