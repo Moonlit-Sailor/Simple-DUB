@@ -77,10 +77,10 @@ class DistributedDUB extends Serializable {
     * @return Boundary Points set M
     */
   def search(minPoint: Array[Int], maxPoint: Array[Int], k: Int, r: Double,
-             T1: Int, points: Array[Array[Double]]): Vector[Array[Int]] = {
+             T1: Int, points: Array[Array[Double]]): Vector[Array[Double]] = {
 
     //    searchCount += 1
-    def searchHelper(n: Int, boundPoint: Array[Int]): Vector[Array[Int]] = {
+    def searchHelper(n: Int, boundPoint: Array[Int]): Vector[Array[Double]] = {
       val min = minPoint.clone() //min point of the current space
       val max = boundPoint map (_ - 1) //max point of the current space
       for (e <- onePositionSet(n, 0)) {
@@ -99,10 +99,10 @@ class DistributedDUB extends Serializable {
 
     if (!maxGreaterThanMin || minPoint.sameElements(midPoint) || density(minPoint map (_.toDouble / k), points, r) < T1) Vector()
     else {
-      if (density(maxPoint map (_.toDouble / k), points, r) >= T1) Vector(maxPoint)
+      if (density(maxPoint map (_.toDouble / k), points, r) >= T1) Vector(maxPoint.map(_.toDouble /k))
       else {
         val MaxBoundP = findMaxBound(minPoint, maxPoint, k, r, T1, points)
-        MaxBoundP +: searchHelper(pow(2, MaxBoundP.length).toInt - 2, MaxBoundP)
+        MaxBoundP.map(_.toDouble /k) +: searchHelper(pow(2, MaxBoundP.length).toInt - 2, MaxBoundP)
       }
     }
   }
@@ -153,7 +153,7 @@ class DistributedDUB extends Serializable {
       }
 
     } // end for
-    p // return p as the MaxPoint
+    p // return p as the MaxBoundPoint
   }
 
   /** filter out the elements which are within the Boundary Set
@@ -164,11 +164,11 @@ class DistributedDUB extends Serializable {
     * @param k           : granularity parameter
     * @return : the remaining points
     */
-  def exclude(pointsArrayWithLabel: Array[(Array[Double], Int)], boundarySet: Vector[Array[Int]], k: Int)
-  : Array[(Array[Double], Int)] = {
+  def exclude(pointsArrayWithLabel: Array[Array[Double]], boundarySet: Vector[Array[Double]], k: Int)
+  : Array[Array[Double]] = {
     def notDominateBy(a: Array[Double], b: Array[Double]) = (a zip b).exists { case (x, y) => x > y }
 
-    pointsArrayWithLabel.filter{case(p,_) => boundarySet.forall(b => notDominateBy(p, b map (_.toDouble / k)))}
+    pointsArrayWithLabel.filter{pArray => boundarySet.forall(b => notDominateBy(pArray, b))}
   }
 }
 
@@ -195,11 +195,11 @@ object test{
     val dim = 4 // 4 features
     val k = 50
     val r = 0.25
-    val T1 = 1500
+    val T1 = 15000
     val T2 = 5000
-    val numPartitions = 36
+    val numPartitions = 25
 
-    val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("DistributedDUB").getOrCreate()
+    val ss = SparkSession.builder().master("spark://10.10.10.51:7077").appName("DistributedDUB").getOrCreate()
 
     // points's element is type of DataSet[(String, String, Array[Double](4))]
 //    import ss.implicits._
@@ -208,22 +208,24 @@ object test{
 
     val randomGen = new Random(47)
 
-    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/bigdata")
+    val data = ss.sparkContext.textFile("hdfs://10.10.10.51:8020/dbp")
       .map(line => (randomGen.nextInt(1000) % numPartitions, line)).partitionBy(new HashPartitioner(numPartitions))
 
+//    val pointsWithLabel = data
+//      .map{ case (num, line) => (line.split(",").take(dim), line.split(",").last)}
+//      .map{ case (pArray, label) => (pArray.map(_.toDouble),label.toInt)}
+//      .persist(StorageLevel.MEMORY_AND_DISK)
+
     val pointsWithLabel = data
-      .map{ case (num, line) => (line.split(",").take(dim), line.split(",").last)}
-      .map{ case (pArray, label) => (pArray.map(_.toDouble),label.toInt)}
-      .persist(StorageLevel.MEMORY_AND_DISK)
-    val points = data.map{case (num,line) => line}
-      .map(line=>line.split(",").take(dim)).map(pArray=>pArray.map(_.toDouble))
+          .map{ case (num, line) => line.split(",").take(dim+1).map(_.toDouble)}
+          .persist(StorageLevel.MEMORY_AND_DISK)
 
     val totalPositivePerPartition = pointsWithLabel.mapPartitionsWithIndex((parId,iter) => {
-      val positiveCounter = iter.count{case(_,label) => label == 1}
+      val positiveCounter = iter.count(pArray => pArray.last == 1)
       Seq((parId,positiveCounter)).iterator
     }).collect()
 
-    val totalCountPerPartition = points.mapPartitionsWithIndex((parId, iter) =>
+    val totalCountPerPartition = pointsWithLabel.mapPartitionsWithIndex((parId, iter) =>
       Seq((parId,iter.length)).iterator
     ).collect()
 
@@ -233,20 +235,21 @@ object test{
     val resultPartitionSet = pointsWithLabel.mapPartitions(iter => {
       val pointsArrayWithLabel = iter.toArray
 
-      val pointsArray = pointsArrayWithLabel.map{case(pArray,_) => pArray}
-      val localBoundarySet = broadcastDUB.value.phase1Search(k, r, T1, pointsArray, dim)
+//      val pointsArray = pointsArrayWithLabel.map{case(pArray,_) => pArray}
+      val localBoundarySet = broadcastDUB.value.phase1Search(k, r, T1, pointsArrayWithLabel, dim)
       val resultWithLabel = broadcastDUB.value.exclude(pointsArrayWithLabel,localBoundarySet,k)
       resultWithLabel.iterator
     }).persist(StorageLevel.MEMORY_AND_DISK)
 
-    pointsWithLabel.unpersist()
 
     val resultCountPerPartition = resultPartitionSet.mapPartitionsWithIndex((parId, iter) =>
       Seq((parId,iter.length)).iterator
     ).collect()
 
+    pointsWithLabel.unpersist()
+
     val resultPositivePerPartition = resultPartitionSet.mapPartitionsWithIndex((parId,iter) => {
-      val positiveCounter = iter.count{case(_,label) => label == 1}
+      val positiveCounter = iter.count{p => p.last == 1}
       Seq((parId,positiveCounter)).iterator
     }).collect()
 
