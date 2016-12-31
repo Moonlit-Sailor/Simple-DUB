@@ -195,9 +195,9 @@ object test{
     val dim = 4 // 4 features
     val k = 50
     val r = 0.25
-    val T1 = 15000
+    val T1 = 33300
     val T2 = 5000
-    val numPartitions = 25
+    val numPartitions = 15
 
     val ss = SparkSession.builder().master("spark://10.10.10.51:7077").appName("DistributedDUB").getOrCreate()
 
@@ -208,7 +208,7 @@ object test{
 
     val randomGen = new Random(47)
 
-    val data = ss.sparkContext.textFile("hdfs://10.10.10.51:8020/dbp")
+    val data = ss.sparkContext.textFile("hdfs://10.10.10.51:8020/tenGdata")
       .map(line => (randomGen.nextInt(1000) % numPartitions, line)).partitionBy(new HashPartitioner(numPartitions))
 
 //    val pointsWithLabel = data

@@ -201,30 +201,33 @@ object SimpleDUBBenchmark {
     val dim = 4 // 4 features
     val k = 50
     val r = 0.25
-    val T1 = 50000
+    val T1 = 500000
+//    val T1 = 1000
     val T2 = 5000
-    val numPartitions = 36
+    val numPartitions = 8
 
-    val ss = SparkSession.builder().master("spark://10.1.0.23:7077").appName("SimpleDUB_Bench").getOrCreate()
+    val ss = SparkSession.builder().master("spark://10.10.10.51:7077").appName("SimpleDUB_Bench").getOrCreate()
 
     // points's element is type of RDD[ Array[Double](dim) ]
-    val data = ss.sparkContext.textFile("hdfs://10.0.0.23:9000/bigdata").repartition(numPartitions)
+    val data = ss.sparkContext.textFile("hdfs://10.10.10.51:8020/tenGdata")//.repartition(numPartitions)
       .map(line => (line.split(",").take(dim), line.split(",").last))
       .map{case(pArray,label) => (pArray.map(_.toDouble),label.toInt)}
-    data.persist(StorageLevel.MEMORY_AND_DISK)
+    data.persist(StorageLevel.DISK_ONLY)
 
-    val points = data.map{case(array,_) => array}.persist(StorageLevel.MEMORY_AND_DISK)
+    val points = data.map{case(array,_) => array}.persist(StorageLevel.DISK_ONLY)
     val totalCount = points.count
 
     val phase1BoundarySet = phase1Search(k,r,T1,points,dim)
 
+    points.unpersist()
     val positiveCounter = ss.sparkContext.accumulator(0)
     data.foreach{case(_,label) => if(label == 1) positiveCounter += 1}
     val totalPositive = positiveCounter.value
     // remove the points inside the boundary
-    val pointsAfterPhase1 = exclude(data,phase1BoundarySet,k).persist(StorageLevel.MEMORY_AND_DISK)
+    val pointsAfterPhase1 = exclude(data,phase1BoundarySet,k).persist(StorageLevel.DISK_ONLY)
     val resultCount = pointsAfterPhase1.count
 
+    data.unpersist()
     val resultPositiveCounter = ss.sparkContext.accumulator(0)
     pointsAfterPhase1.foreach{case(_,label) => if(label == 1) resultPositiveCounter += 1}
     val resultPositive = resultPositiveCounter.value
